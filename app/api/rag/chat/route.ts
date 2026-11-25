@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { PRIMARY_CHAT_MODEL } from "@/lib/gemini-resilient";
 import {
+  type DocumentChunk,
   embedQueryText,
-  getSessionDocuments,
-  retrieveTopChunks,
+  retrieveTopChunksFromArray,
 } from "@/lib/rag-store";
 import { detectPrimaryLanguage } from "@/lib/rag-suggestions";
 
@@ -32,7 +32,13 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let body: { sessionId?: string; question?: string; model?: string };
+  let body: {
+    sessionId?: string;
+    question?: string;
+    model?: string;
+    knowledgeChunks?: DocumentChunk[];
+    chunks?: DocumentChunk[];
+  };
   try {
     body = await request.json();
   } catch {
@@ -42,19 +48,30 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const sessionId = body.sessionId?.trim();
+  const sessionId = body.sessionId?.trim() || "stateless";
   const question = body.question?.trim();
   const primaryModel = body.model?.trim() || PRIMARY_CHAT_MODEL;
+  const rawChunks = Array.isArray(body.knowledgeChunks)
+    ? body.knowledgeChunks
+    : Array.isArray(body.chunks)
+      ? body.chunks
+      : [];
+  const validChunks = rawChunks.filter(
+    (c) =>
+      c &&
+      typeof c.content === "string" &&
+      Array.isArray(c.embedding) &&
+      c.embedding.length > 0
+  );
 
-  if (!sessionId || !question) {
+  if (!question) {
     return NextResponse.json(
-      { ok: false, error: "sessionId 和 question 不能为空" },
+      { ok: false, error: "question 不能为空" },
       { status: 400 }
     );
   }
 
-  const sessionState = getSessionDocuments(sessionId);
-  if (sessionState.totalChunks === 0) {
+  if (validChunks.length === 0) {
     return NextResponse.json(
       {
         ok: false,
@@ -85,7 +102,12 @@ export async function POST(request: NextRequest) {
           apiKey,
           overallController.signal
         );
-        const retrieved = retrieveTopChunks(sessionId, queryEmbedding, 3);
+        const retrieved = retrieveTopChunksFromArray(
+          validChunks,
+          queryEmbedding,
+          3
+        );
+        void sessionId;
 
         const citations = retrieved.map((item) => ({
           id: item.id,

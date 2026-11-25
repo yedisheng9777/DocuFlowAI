@@ -7,7 +7,6 @@ import {
   embedDocumentChunks,
   getSessionDocuments,
   removeDocumentFromSession,
-  saveDocumentToSession,
 } from "@/lib/rag-store";
 import {
   SAMPLE_MANUAL_CONTENT,
@@ -229,18 +228,18 @@ export async function POST(request: NextRequest) {
       isSample,
     };
 
-    const sessionState = saveDocumentToSession(sessionId, storedDoc, docChunks);
-
     return NextResponse.json({
       ok: true,
       sessionId,
       document: storedDoc,
+      chunks: docChunks,
+      documents: [storedDoc],
+      totalChunks: docChunks.length,
       docLang,
       suggestedQuestions,
       ...(isSample
         ? { suggestedQuestionsByLang: SAMPLE_SUGGESTED_QUESTIONS_BY_LANG }
         : {}),
-      ...sessionState,
     });
   } catch (error) {
     const message =

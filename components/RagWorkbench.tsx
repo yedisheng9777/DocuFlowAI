@@ -17,12 +17,21 @@ import {
   UploadCloud,
   User,
 } from "lucide-react";
-import {
-  SAMPLE_SUGGESTED_QUESTIONS_BY_LANG,
-  type SuggestedQuestion,
-  type SupportedUiLang,
+import type {
+  SuggestedQuestion,
+  SupportedUiLang,
 } from "@/lib/sample-manual";
 import { useI18n } from "@/components/I18nProvider";
+
+interface KnowledgeChunk {
+  id: string;
+  docId: string;
+  docName: string;
+  section: string;
+  chunkIndex: number;
+  content: string;
+  embedding: number[];
+}
 
 interface StoredDocument {
   id: string;
@@ -148,7 +157,8 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
   const { locale, t } = useI18n();
   const [sessionId, setSessionId] = useState<string>("");
   const [documents, setDocuments] = useState<StoredDocument[]>([]);
-  const [totalChunks, setTotalChunks] = useState<number>(0);
+  const [knowledgeChunks, setKnowledgeChunks] = useState<KnowledgeChunk[]>([]);
+  const totalChunks = knowledgeChunks.length;
   const [suggestionsCache, setSuggestionsCache] = useState<
     Partial<Record<SupportedUiLang, SuggestedQuestion[]>>
   >({});
@@ -177,12 +187,16 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
   const preloadSeqRef = useRef(0);
 
   const activeSuggestions =
-    suggestionsCache[locale] ??
-    (suggestionsDocLang ? suggestionsCache[suggestionsDocLang] : undefined) ??
-    Object.values(suggestionsCache).find(
-      (list) => Array.isArray(list) && list.length > 0
-    ) ??
-    SAMPLE_SUGGESTED_QUESTIONS_BY_LANG[locale];
+    knowledgeChunks.length > 0
+      ? (suggestionsCache[locale] ??
+          (suggestionsDocLang
+            ? suggestionsCache[suggestionsDocLang]
+            : undefined) ??
+          Object.values(suggestionsCache).find(
+            (list) => Array.isArray(list) && list.length > 0
+          ) ??
+          [])
+      : [];
 
   useEffect(() => {
     const newId =
@@ -270,12 +284,16 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
         throw new Error(data.error || t.rag.ingestErrorFallback);
       }
 
-      setDocuments(data.documents || []);
-      setTotalChunks(data.totalChunks || 0);
+      const uploadedDoc = data.document as StoredDocument;
+      const uploadedChunks = Array.isArray(data.chunks)
+        ? (data.chunks as KnowledgeChunk[])
+        : [];
+      setDocuments((prev) => [...prev, uploadedDoc]);
+      setKnowledgeChunks((prev) => [...prev, ...uploadedChunks]);
       setIngestNotice({
         kind: "upload",
-        name: data.document.name,
-        chunks: data.document.chunkCount,
+        name: uploadedDoc.name,
+        chunks: uploadedDoc.chunkCount,
       });
 
       const docLang: SupportedUiLang =
@@ -306,37 +324,40 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
     }
   }
 
-  async function loadSampleInternal(options?: {
-    silent?: boolean;
-    signal?: AbortSignal;
-  }): Promise<boolean> {
-    if (!sessionId) return false;
-    const silent = Boolean(options?.silent);
-    if (!silent && isIngesting) return false;
+  async function handleLoadSample() {
+    if (!sessionId || isIngesting) return;
 
     preloadSeqRef.current += 1;
     setIsGeneratingSuggestions(false);
     setIngestError(null);
-    if (!silent) {
-      setIngestNotice(null);
-      setIsIngesting(true);
-      setIngestAction("sample");
-    }
+    setIngestNotice(null);
+    setIsIngesting(true);
+    setIngestAction("sample");
 
     try {
       const res = await fetch("/api/rag/ingest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode: "sample", sessionId }),
-        signal: options?.signal,
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
         throw new Error(data.error || t.rag.ingestErrorFallback);
       }
 
-      setDocuments(data.documents || []);
-      setTotalChunks(data.totalChunks || 0);
+      const sampleDoc = data.document as StoredDocument;
+      const sampleChunks = Array.isArray(data.chunks)
+        ? (data.chunks as KnowledgeChunk[])
+        : [];
+      const existingSampleIds = new Set(
+        documents.filter((d) => d.isSample).map((d) => d.id)
+      );
+      setDocuments((prev) => [...prev.filter((d) => !d.isSample), sampleDoc]);
+      setKnowledgeChunks((prev) => [
+        ...prev.filter((c) => !existingSampleIds.has(c.docId)),
+        ...sampleChunks,
+      ]);
+
       if (
         data.suggestedQuestionsByLang &&
         typeof data.suggestedQuestionsByLang === "object"
@@ -347,110 +368,71 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
           >
         );
         setSuggestionsDocLang("ja");
-        setSuggestionsDocId(data.document.id);
+        setSuggestionsDocId(sampleDoc.id);
       } else if (Array.isArray(data.suggestedQuestions)) {
         setSuggestionsCache({
           ja: data.suggestedQuestions as SuggestedQuestion[],
         });
         setSuggestionsDocLang("ja");
-        setSuggestionsDocId(data.document.id);
+        setSuggestionsDocId(sampleDoc.id);
       }
       setIngestNotice({
         kind: "sample",
-        chunks: data.document.chunkCount,
+        chunks: sampleDoc.chunkCount,
       });
-      return true;
     } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : t.rag.ingestErrorFallback;
-      setIngestError(msg);
-      if (silent) {
-        throw err;
-      }
-      return false;
+      setIngestError(
+        err instanceof Error ? err.message : t.rag.ingestErrorFallback
+      );
     } finally {
-      if (!silent) {
-        setIsIngesting(false);
-        setIngestAction(null);
-      }
+      setIsIngesting(false);
+      setIngestAction(null);
     }
   }
 
-  async function handleLoadSample() {
-    await loadSampleInternal({ silent: false });
-  }
-
-  async function handleRemoveDocument(docId: string, isSample?: boolean) {
-    if (!sessionId) return;
-    try {
-      const res = await fetch(
-        `/api/rag/ingest?sessionId=${encodeURIComponent(
-          sessionId
-        )}&docId=${encodeURIComponent(docId)}`,
-        { method: "DELETE" }
-      );
-      const data = await res.json();
-      if (data.ok) {
-        const remainingDocs = data.documents || [];
-        setDocuments(remainingDocs);
-        setTotalChunks(data.totalChunks || 0);
-        if (
-          isSample ||
-          docId === suggestionsDocId ||
-          remainingDocs.length === 0
-        ) {
-          preloadSeqRef.current += 1;
-          setSuggestionsCache({});
-          setSuggestionsDocLang(null);
-          setSuggestionsDocId(null);
-        }
-      }
-    } catch {
-      // Ignore transient UI delete error
-    }
-  }
-
-  async function handleClearAll() {
-    if (!sessionId) return;
-    try {
-      await fetch(
-        `/api/rag/ingest?sessionId=${encodeURIComponent(sessionId)}`,
-        { method: "DELETE" }
-      );
+  function handleRemoveDocument(docId: string, isSample?: boolean) {
+    const remainingDocs = documents.filter((d) => d.id !== docId);
+    const remainingChunks = knowledgeChunks.filter((c) => c.docId !== docId);
+    setDocuments(remainingDocs);
+    setKnowledgeChunks(remainingChunks);
+    if (
+      isSample ||
+      docId === suggestionsDocId ||
+      remainingChunks.length === 0
+    ) {
       preloadSeqRef.current += 1;
-      setIsGeneratingSuggestions(false);
-      setDocuments([]);
-      setTotalChunks(0);
       setSuggestionsCache({});
       setSuggestionsDocLang(null);
       setSuggestionsDocId(null);
-      setMessages([]);
+    }
+    if (remainingChunks.length === 0) {
       setIngestNotice(null);
-      setIngestError(null);
-    } catch {
-      // Ignore
     }
   }
 
-  async function submitQuestion(
-    rawQuestion: string,
-    options?: { autoLoadSample?: boolean }
-  ) {
+  function handleClearAll() {
+    preloadSeqRef.current += 1;
+    setIsGeneratingSuggestions(false);
+    setDocuments([]);
+    setKnowledgeChunks([]);
+    setSuggestionsCache({});
+    setSuggestionsDocLang(null);
+    setSuggestionsDocId(null);
+    setMessages([]);
+    setIngestNotice(null);
+    setIngestError(null);
+  }
+
+  async function submitQuestion(rawQuestion: string) {
     const question = rawQuestion.trim();
-    const allowAutoSample = Boolean(options?.autoLoadSample);
-    if (
-      !question ||
-      !sessionId ||
-      isAsking ||
-      (totalChunks === 0 && !allowAutoSample)
-    ) {
+    if (!question || !sessionId || isAsking || knowledgeChunks.length === 0) {
       return;
     }
 
     const userMsgId = `u-${Date.now()}`;
     const assistantMsgId = `a-${Date.now() + 1}`;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 30000);
+    const timer = setTimeout(() => controller.abort(), 25000);
 
     setInputValue("");
     setIsAsking(true);
@@ -467,37 +449,16 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
     ]);
 
     try {
-      if (allowAutoSample && (totalChunks === 0 || documents.length === 0)) {
-        await loadSampleInternal({ silent: true, signal: controller.signal });
-      }
-
-      let res = await fetch("/api/rag/chat", {
+      const res = await fetch("/api/rag/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, question }),
+        body: JSON.stringify({
+          sessionId,
+          question,
+          knowledgeChunks,
+        }),
         signal: controller.signal,
       });
-
-      // Handle cold-start / empty backend session seamlessly when clicking a suggested prompt
-      if (res.status === 400 && allowAutoSample) {
-        const errBody = (await res.json().catch(() => ({}))) as {
-          error?: string;
-        };
-        if (
-          errBody.error &&
-          errBody.error.includes("知识库为空")
-        ) {
-          await loadSampleInternal({ silent: true, signal: controller.signal });
-          res = await fetch("/api/rag/chat", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sessionId, question }),
-            signal: controller.signal,
-          });
-        } else {
-          throw new Error(errBody.error || `HTTP ${res.status}`);
-        }
-      }
 
       if (!res.ok) {
         const errBody = (await res.json().catch(() => ({}))) as {
@@ -655,7 +616,7 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
           </p>
         </div>
 
-        {documents.length > 0 && (
+        {documents.length > 0 && knowledgeChunks.length > 0 && (
           <button
             type="button"
             onClick={handleClearAll}
@@ -773,7 +734,7 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
         )}
 
         {/* Loaded Documents List */}
-        {documents.length > 0 && (
+        {documents.length > 0 && knowledgeChunks.length > 0 && (
           <div className="mt-3 border-t border-slate-100 pt-3">
             <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-slate-500">
               <Database className="h-3.5 w-3.5 shrink-0" />
@@ -808,8 +769,9 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
         )}
       </section>
 
-      {/* Suggested Questions (instant original-lang render + silent background cache across zh/ja/en) */}
-      {(isGeneratingSuggestions || activeSuggestions.length > 0) && (
+      {/* Suggested Questions (strictly visible only when knowledgeChunks > 0) */}
+      {(isGeneratingSuggestions ||
+        (knowledgeChunks.length > 0 && activeSuggestions.length > 0)) && (
         <section className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm">
           <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-slate-700">
             {isGeneratingSuggestions ? (
@@ -844,9 +806,7 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
                   key={sq.id}
                   type="button"
                   disabled={isAsking || isIngesting}
-                  onClick={() =>
-                    submitQuestion(sq.question, { autoLoadSample: true })
-                  }
+                  onClick={() => submitQuestion(sq.question)}
                   className="group flex flex-col items-start rounded-lg border border-slate-200 bg-slate-50/80 p-2.5 text-left transition hover:border-indigo-300 hover:bg-indigo-50/50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <div className="flex w-full items-start justify-between gap-2">

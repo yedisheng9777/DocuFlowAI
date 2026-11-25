@@ -298,15 +298,14 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   return denom === 0 ? 0 : dot / denom;
 }
 
-export function retrieveTopChunks(
-  sessionId: string,
+export function retrieveTopChunksFromArray(
+  chunks: DocumentChunk[],
   queryEmbedding: number[],
   topK = 3
 ): RetrievedChunk[] {
-  const session = getOrCreateSession(sessionId);
-  if (session.chunks.length === 0) return [];
+  if (!Array.isArray(chunks) || chunks.length === 0) return [];
 
-  return session.chunks
+  return chunks
     .map((chunk) => {
       const score = cosineSimilarity(queryEmbedding, chunk.embedding);
       const clampedScore = Math.max(0, Math.min(1, score));
@@ -323,4 +322,13 @@ export function retrieveTopChunks(
     })
     .sort((a, b) => b.score - a.score)
     .slice(0, topK);
+}
+
+export function retrieveTopChunks(
+  sessionId: string,
+  queryEmbedding: number[],
+  topK = 3
+): RetrievedChunk[] {
+  const session = getOrCreateSession(sessionId);
+  return retrieveTopChunksFromArray(session.chunks, queryEmbedding, topK);
 }

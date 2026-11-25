@@ -1,9 +1,17 @@
+export type SupportedUiLang = "zh" | "ja" | "en";
+
 export interface SuggestedQuestion {
   id: string;
-  label: string;
+  title: string;
   question: string;
-  category: string;
+  category?: string;
+  label?: string;
 }
+
+export type TrilingualSuggestedQuestions = Record<
+  SupportedUiLang,
+  SuggestedQuestion[]
+>;
 
 export const SAMPLE_MANUAL_TITLE = "株式会社サンプル 社内規定・経費精算マニュアル";
 export const SAMPLE_MANUAL_FILENAME = "株式会社サンプル_社内規定・経費精算マニュアル.md";
@@ -77,23 +85,95 @@ export const SAMPLE_MANUAL_CONTENT = `# 株式会社サンプル 社内規定・
 3. 慶弔関連の申請は、事実発生後速やかに人事部ポータルより証憑書類（案内状・証明書等）を添えて提出すること。
 `;
 
-export const SAMPLE_SUGGESTED_QUESTIONS: SuggestedQuestion[] = [
-  {
-    id: "q-transport",
-    category: "交通費精算規定",
-    label: "交通费报销上限与规则",
-    question: "通勤交通費の上限額や、新幹線・タクシーを利用できる条件と精算期限を教えてください。",
-  },
-  {
-    id: "q-overtime",
-    category: "時間外労働・残業申請規定",
-    label: "加班申请流程与上限",
-    question: "残業（時間外労働）の事前申請の締切時刻と、月45時間を超える場合の承認フローを教えてください。",
-  },
-  {
-    id: "q-telework",
-    category: "テレワーク・在宅勤務規定",
-    label: "远程办公规定与补贴",
-    question: "テレワーク（在宅勤務）は週何日まで可能ですか？手当の金額やセキュリティ上の禁止事項も教えてください。",
-  },
-];
+export const SAMPLE_SUGGESTED_QUESTIONS_BY_LANG: TrilingualSuggestedQuestions = {
+  zh: [
+    {
+      id: "q-transport",
+      category: "交通費精算規定",
+      title: "交通费报销上限与规则",
+      label: "交通费报销上限与规则",
+      question:
+        "通勤交通费的每月上限是多少？什么情况下可以乘坐新干线或出租车，报销截止期限是什么时候？",
+    },
+    {
+      id: "q-overtime",
+      category: "時間外労働・残業申請規定",
+      title: "加班申请流程与上限",
+      label: "加班申请流程与上限",
+      question:
+        "加班（时间外劳动）的事前申请截止时间是几点？每月超过 45 小时需要经过怎样的审批流程？",
+    },
+    {
+      id: "q-telework",
+      category: "テレワーク・在宅勤務規定",
+      title: "远程办公规定与补贴",
+      label: "远程办公规定与补贴",
+      question:
+        "居家办公每周最多可以申请几天？补贴金额是多少，有哪些信息安全禁止事项？",
+    },
+  ],
+  ja: [
+    {
+      id: "q-transport",
+      category: "交通費精算規定",
+      title: "交通費の上限と精算ルール",
+      label: "交通費の上限と精算ルール",
+      question:
+        "通勤交通費の上限額や、新幹線・タクシーを利用できる条件と精算期限を教えてください。",
+    },
+    {
+      id: "q-overtime",
+      category: "時間外労働・残業申請規定",
+      title: "残業申請の締切と承認フロー",
+      label: "残業申請の締切と承認フロー",
+      question:
+        "残業（時間外労働）の事前申請の締切時刻と、月45時間を超える場合の承認フローを教えてください。",
+    },
+    {
+      id: "q-telework",
+      category: "テレワーク・在宅勤務規定",
+      title: "テレワーク日数上限と手当",
+      label: "テレワーク日数上限と手当",
+      question:
+        "テレワーク（在宅勤務）は週何日まで可能ですか？手当の金額やセキュリティ上の禁止事項も教えてください。",
+    },
+  ],
+  en: [
+    {
+      id: "q-transport",
+      category: "交通費精算規定",
+      title: "Commute & Travel Expense Cap",
+      label: "Commute & Travel Expense Cap",
+      question:
+        "What is the monthly cap for commuting expenses, when are Shinkansen or taxis permitted, and what is the reimbursement deadline?",
+    },
+    {
+      id: "q-overtime",
+      category: "時間外労働・残業申請規定",
+      title: "Overtime Request & Approval Flow",
+      label: "Overtime Request & Approval Flow",
+      question:
+        "What is the deadline for submitting prior overtime approval, and what approval workflow applies when exceeding 45 hours per month?",
+    },
+    {
+      id: "q-telework",
+      category: "テレワーク・在宅勤務規定",
+      title: "Remote Work Limit & Allowance",
+      label: "Remote Work Limit & Allowance",
+      question:
+        "How many days per week is telework allowed, what is the daily/monthly allowance, and what security restrictions apply?",
+    },
+  ],
+};
+
+export const SAMPLE_SUGGESTED_QUESTIONS: SuggestedQuestion[] =
+  SAMPLE_SUGGESTED_QUESTIONS_BY_LANG.ja;
+
+export function getSampleSuggestedQuestions(
+  lang?: string
+): SuggestedQuestion[] {
+  if (lang === "ja" || lang === "en" || lang === "zh") {
+    return SAMPLE_SUGGESTED_QUESTIONS_BY_LANG[lang];
+  }
+  return SAMPLE_SUGGESTED_QUESTIONS_BY_LANG.zh;
+}

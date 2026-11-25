@@ -17,7 +17,10 @@ import {
   UploadCloud,
   User,
 } from "lucide-react";
-import type { SuggestedQuestion } from "@/lib/sample-manual";
+import type {
+  SuggestedQuestion,
+  SupportedUiLang,
+} from "@/lib/sample-manual";
 import { useI18n } from "@/components/I18nProvider";
 
 interface StoredDocument {
@@ -141,13 +144,17 @@ function renderHighlightedSnippet(snippet: string, queryText?: string) {
 }
 
 export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const [sessionId, setSessionId] = useState<string>("");
   const [documents, setDocuments] = useState<StoredDocument[]>([]);
   const [totalChunks, setTotalChunks] = useState<number>(0);
-  const [suggestedQuestions, setSuggestedQuestions] = useState<
-    SuggestedQuestion[]
-  >([]);
+  const [suggestionsCache, setSuggestionsCache] = useState<
+    Partial<Record<SupportedUiLang, SuggestedQuestion[]>>
+  >({});
+  const [suggestionsDocLang, setSuggestionsDocLang] =
+    useState<SupportedUiLang | null>(null);
+  const [suggestionsDocId, setSuggestionsDocId] = useState<string | null>(null);
+  const [isGeneratingSuggestions, setIsGeneratingSuggestions] = useState(false);
 
   const [isDragging, setIsDragging] = useState(false);
   const [isIngesting, setIsIngesting] = useState(false);
@@ -166,6 +173,15 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const preloadSeqRef = useRef(0);
+
+  const activeSuggestions =
+    suggestionsCache[locale] ??
+    (suggestionsDocLang ? suggestionsCache[suggestionsDocLang] : undefined) ??
+    Object.values(suggestionsCache).find(
+      (list) => Array.isArray(list) && list.length > 0
+    ) ??
+    [];
 
   useEffect(() => {
     const newId =
@@ -186,12 +202,58 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  function preloadRemainingLanguagesSilently(
+    questions: SuggestedQuestion[],
+    sourceLang: SupportedUiLang,
+    targetDocId: string
+  ) {
+    if (questions.length === 0) return;
+    const seq = ++preloadSeqRef.current;
+
+    void fetch("/api/rag/translate-suggestions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ questions, sourceLang }),
+    })
+      .then((res) => res.json().then((data) => ({ ok: res.ok, data })))
+      .then(({ ok, data }) => {
+        if (preloadSeqRef.current !== seq) return;
+        if (
+          ok &&
+          data?.ok &&
+          data.translations &&
+          typeof data.translations === "object"
+        ) {
+          setSuggestionsCache((prev) => {
+            if (preloadSeqRef.current !== seq || !prev[sourceLang]?.length) {
+              return prev;
+            }
+            void targetDocId;
+            return {
+              ...prev,
+              ...(data.translations as Partial<
+                Record<SupportedUiLang, SuggestedQuestion[]>
+              >),
+            };
+          });
+        }
+      })
+      .catch(() => {
+        // Silent background preload: keep original-language suggestions if translation fails
+      });
+  }
+
   async function handleFileUpload(file: File) {
     if (!sessionId || isIngesting) return;
+    preloadSeqRef.current += 1;
     setIngestError(null);
     setIngestNotice(null);
     setIsIngesting(true);
     setIngestAction("upload");
+    setIsGeneratingSuggestions(true);
+    setSuggestionsCache({});
+    setSuggestionsDocLang(null);
+    setSuggestionsDocId(null);
 
     try {
       const formData = new FormData();
@@ -214,12 +276,28 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
         name: data.document.name,
         chunks: data.document.chunkCount,
       });
+
+      const docLang: SupportedUiLang =
+        data.docLang === "zh" || data.docLang === "ja" || data.docLang === "en"
+          ? data.docLang
+          : "ja";
+      const questions = Array.isArray(data.suggestedQuestions)
+        ? (data.suggestedQuestions as SuggestedQuestion[])
+        : [];
+
+      if (questions.length > 0) {
+        setSuggestionsCache({ [docLang]: questions });
+        setSuggestionsDocLang(docLang);
+        setSuggestionsDocId(data.document.id);
+        preloadRemainingLanguagesSilently(questions, docLang, data.document.id);
+      }
     } catch (err) {
       setIngestError(
         err instanceof Error ? err.message : t.rag.ingestErrorFallback
       );
     } finally {
       setIsIngesting(false);
+      setIsGeneratingSuggestions(false);
       setIngestAction(null);
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
@@ -229,6 +307,8 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
 
   async function handleLoadSample() {
     if (!sessionId || isIngesting) return;
+    preloadSeqRef.current += 1;
+    setIsGeneratingSuggestions(false);
     setIngestError(null);
     setIngestNotice(null);
     setIsIngesting(true);
@@ -247,8 +327,23 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
 
       setDocuments(data.documents || []);
       setTotalChunks(data.totalChunks || 0);
-      if (Array.isArray(data.suggestedQuestions)) {
-        setSuggestedQuestions(data.suggestedQuestions);
+      if (
+        data.suggestedQuestionsByLang &&
+        typeof data.suggestedQuestionsByLang === "object"
+      ) {
+        setSuggestionsCache(
+          data.suggestedQuestionsByLang as Partial<
+            Record<SupportedUiLang, SuggestedQuestion[]>
+          >
+        );
+        setSuggestionsDocLang("ja");
+        setSuggestionsDocId(data.document.id);
+      } else if (Array.isArray(data.suggestedQuestions)) {
+        setSuggestionsCache({
+          ja: data.suggestedQuestions as SuggestedQuestion[],
+        });
+        setSuggestionsDocLang("ja");
+        setSuggestionsDocId(data.document.id);
       }
       setIngestNotice({
         kind: "sample",
@@ -275,10 +370,18 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
       );
       const data = await res.json();
       if (data.ok) {
-        setDocuments(data.documents || []);
+        const remainingDocs = data.documents || [];
+        setDocuments(remainingDocs);
         setTotalChunks(data.totalChunks || 0);
-        if (isSample) {
-          setSuggestedQuestions([]);
+        if (
+          isSample ||
+          docId === suggestionsDocId ||
+          remainingDocs.length === 0
+        ) {
+          preloadSeqRef.current += 1;
+          setSuggestionsCache({});
+          setSuggestionsDocLang(null);
+          setSuggestionsDocId(null);
         }
       }
     } catch {
@@ -293,9 +396,13 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
         `/api/rag/ingest?sessionId=${encodeURIComponent(sessionId)}`,
         { method: "DELETE" }
       );
+      preloadSeqRef.current += 1;
+      setIsGeneratingSuggestions(false);
       setDocuments([]);
       setTotalChunks(0);
-      setSuggestedQuestions([]);
+      setSuggestionsCache({});
+      setSuggestionsDocLang(null);
+      setSuggestionsDocId(null);
       setMessages([]);
       setIngestNotice(null);
       setIngestError(null);
@@ -310,6 +417,8 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
 
     const userMsgId = `u-${Date.now()}`;
     const assistantMsgId = `a-${Date.now() + 1}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 25000);
 
     setInputValue("");
     setIsAsking(true);
@@ -330,102 +439,129 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, question }),
+        signal: controller.signal,
       });
 
-      if (!res.ok || !res.body) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || `HTTP ${res.status}`);
+      if (!res.ok) {
+        const errBody = (await res.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        throw new Error(errBody.error || `HTTP ${res.status}`);
+      }
+
+      const contentType = res.headers.get("content-type") || "";
+      if (!contentType.includes("text/event-stream") || !res.body) {
+        const data = (await res.json().catch(() => ({}))) as {
+          ok?: boolean;
+          answer?: string;
+          citations?: SourceReference[];
+          model?: string;
+          primaryModel?: string;
+          fallbackUsed?: boolean;
+          error?: string;
+        };
+        if (!data.ok || !data.answer) {
+          throw new Error(data.error || t.rag.requestErrorFallback);
+        }
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantMsgId
+              ? {
+                  ...m,
+                  content: data.answer || "",
+                  sources: data.citations || [],
+                  modelUsed: data.model,
+                  primaryModel: data.primaryModel,
+                  fallbackUsed: Boolean(data.fallbackUsed),
+                  isStreaming: false,
+                }
+              : m
+          )
+        );
+        return;
       }
 
       const reader = res.body.getReader();
-      const decoder = new TextDecoder("utf-8");
+      const decoder = new TextDecoder();
       let buffer = "";
 
+      const handlePayload = (line: string) => {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) return;
+        const jsonStr = trimmed.slice(5).trim();
+        if (!jsonStr) return;
+
+        const payload = JSON.parse(jsonStr) as {
+          type?: string;
+          sources?: SourceReference[];
+          text?: string;
+          model?: string;
+          primaryModel?: string;
+          fallbackUsed?: boolean;
+          error?: string;
+        };
+
+        if (payload.type === "sources" && Array.isArray(payload.sources)) {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantMsgId
+                ? { ...m, sources: payload.sources || [] }
+                : m
+            )
+          );
+        } else if (payload.type === "delta" && typeof payload.text === "string") {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantMsgId
+                ? { ...m, content: `${m.content}${payload.text}` }
+                : m
+            )
+          );
+        } else if (payload.type === "done") {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantMsgId
+                ? {
+                    ...m,
+                    modelUsed: payload.model,
+                    primaryModel: payload.primaryModel,
+                    fallbackUsed: Boolean(payload.fallbackUsed),
+                    isStreaming: false,
+                  }
+                : m
+            )
+          );
+        } else if (payload.type === "error") {
+          throw new Error(payload.error || t.rag.requestErrorFallback);
+        }
+      };
+
       while (true) {
-        const { done, value } = await reader.read();
+        const { value, done } = await reader.read();
         if (done) break;
-
         buffer += decoder.decode(value, { stream: true });
-        const events = buffer.split("\n\n");
-        buffer = events.pop() ?? "";
 
-        for (const event of events) {
-          const line = event
-            .split("\n")
-            .find((l) => l.startsWith("data: "));
-          if (!line) continue;
-
-          const payload = JSON.parse(line.slice(6)) as {
-            type: "sources" | "meta" | "delta" | "done" | "error";
-            sources?: SourceReference[];
-            model?: string;
-            primaryModel?: string;
-            fallbackUsed?: boolean;
-            attempts?: number;
-            text?: string;
-            error?: string;
-          };
-
-          if (payload.type === "sources" && payload.sources) {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantMsgId
-                  ? { ...m, sources: payload.sources }
-                  : m
-              )
-            );
-          } else if (payload.type === "meta" && payload.model) {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantMsgId
-                  ? {
-                      ...m,
-                      modelUsed: payload.model,
-                      primaryModel: payload.primaryModel,
-                      fallbackUsed: payload.fallbackUsed,
-                      attempts: payload.attempts,
-                    }
-                  : m
-              )
-            );
-          } else if (payload.type === "delta" && payload.text) {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantMsgId
-                  ? { ...m, content: m.content + payload.text }
-                  : m
-              )
-            );
-          } else if (payload.type === "done") {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantMsgId
-                  ? {
-                      ...m,
-                      isStreaming: false,
-                      modelUsed: payload.model || m.modelUsed,
-                      primaryModel: payload.primaryModel || m.primaryModel,
-                      fallbackUsed:
-                        payload.fallbackUsed ?? m.fallbackUsed,
-                      attempts: payload.attempts ?? m.attempts,
-                    }
-                  : m
-              )
-            );
-          } else if (payload.type === "error") {
-            throw new Error(payload.error || t.rag.requestErrorFallback);
-          }
+        let newlineIdx = buffer.indexOf("\n");
+        while (newlineIdx >= 0) {
+          const line = buffer.slice(0, newlineIdx);
+          buffer = buffer.slice(newlineIdx + 1);
+          handlePayload(line);
+          newlineIdx = buffer.indexOf("\n");
         }
       }
 
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantMsgId ? { ...m, isStreaming: false } : m
-        )
-      );
+      if (buffer.trim()) {
+        handlePayload(buffer);
+      }
     } catch (err) {
-      const errorMessage =
-        err instanceof Error ? err.message : t.rag.requestErrorFallback;
+      const isAbort =
+        controller.signal.aborted ||
+        (err instanceof Error && err.name === "AbortError");
+      const errorMessage = isAbort
+        ? t.rag.requestErrorFallback
+        : err instanceof Error
+          ? err.message
+          : t.rag.requestErrorFallback;
       setMessages((prev) =>
         prev.map((m) =>
           m.id === assistantMsgId
@@ -434,7 +570,13 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
         )
       );
     } finally {
+      clearTimeout(timer);
       setIsAsking(false);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantMsgId ? { ...m, isStreaming: false } : m
+        )
+      );
     }
   }
 
@@ -609,36 +751,60 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
         )}
       </section>
 
-      {/* Suggested Questions (when sample is loaded) */}
-      {suggestedQuestions.length > 0 && (
+      {/* Suggested Questions (instant original-lang render + silent background cache across zh/ja/en) */}
+      {(isGeneratingSuggestions || activeSuggestions.length > 0) && (
         <section className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm">
           <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-slate-700">
-            <Sparkles className="h-3.5 w-3.5 shrink-0 text-indigo-600" />
-            <span>{t.rag.suggestedHeading}</span>
+            {isGeneratingSuggestions ? (
+              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-indigo-600" />
+            ) : (
+              <Sparkles className="h-3.5 w-3.5 shrink-0 text-indigo-600" />
+            )}
+            <span>
+              {isGeneratingSuggestions
+                ? t.rag.generatingSuggestions
+                : t.rag.suggestedHeading}
+            </span>
           </div>
-          <div className="grid gap-2 md:grid-cols-3">
-            {suggestedQuestions.map((sq) => (
-              <button
-                key={sq.id}
-                type="button"
-                disabled={isAsking}
-                onClick={() => submitQuestion(sq.question)}
-                className="group flex flex-col items-start rounded-lg border border-slate-200 bg-slate-50/80 p-2.5 text-left transition hover:border-indigo-300 hover:bg-indigo-50/50 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <div className="flex w-full items-start justify-between gap-2">
-                  <span className="rounded bg-white px-1.5 py-0.5 text-[11px] font-medium leading-snug text-indigo-700 ring-1 ring-indigo-100">
-                    {t.rag.suggestedLabels[sq.id] || sq.label}
-                  </span>
-                  <span className="shrink-0 whitespace-nowrap text-[11px] text-slate-400 group-hover:text-indigo-600">
-                    {t.rag.suggestedAction}
-                  </span>
+
+          {isGeneratingSuggestions ? (
+            <div className="grid gap-2 md:grid-cols-3">
+              {[0, 1, 2].map((idx) => (
+                <div
+                  key={idx}
+                  className="flex flex-col gap-2 rounded-lg border border-slate-200 bg-slate-50/80 p-3"
+                >
+                  <div className="h-4 w-24 animate-pulse rounded bg-indigo-100/80" />
+                  <div className="h-3 w-full animate-pulse rounded bg-slate-200/80" />
+                  <div className="h-3 w-4/5 animate-pulse rounded bg-slate-200/80" />
                 </div>
-                <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-slate-700">
-                  {sq.question}
-                </p>
-              </button>
-            ))}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <div className="grid gap-2 md:grid-cols-3">
+              {activeSuggestions.map((sq) => (
+                <button
+                  key={sq.id}
+                  type="button"
+                  disabled={isAsking}
+                  onClick={() => submitQuestion(sq.question)}
+                  className="group flex flex-col items-start rounded-lg border border-slate-200 bg-slate-50/80 p-2.5 text-left transition hover:border-indigo-300 hover:bg-indigo-50/50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <div className="flex w-full items-start justify-between gap-2">
+                    <span className="rounded bg-white px-1.5 py-0.5 text-[11px] font-medium leading-snug text-indigo-700 ring-1 ring-indigo-100">
+                      {sq.title || t.rag.suggestedLabels[sq.id] || sq.label}
+                    </span>
+                    <span className="shrink-0 whitespace-nowrap text-[11px] text-slate-400 group-hover:text-indigo-600">
+                      {t.rag.suggestedAction}
+                    </span>
+                  </div>
+                  <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-slate-700">
+                    {sq.question}
+                  </p>
+                </button>
+              ))}
+            </div>
+          )}
         </section>
       )}
 

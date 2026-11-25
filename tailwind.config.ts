@@ -9,18 +9,8 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: [
-          "var(--font-inter)",
-          "var(--font-cjk-primary)",
-          "var(--font-cjk-secondary)",
-          "sans-serif",
-        ],
-        mono: [
-          "var(--font-mono)",
-          "ui-monospace",
-          "SFMono-Regular",
-          "monospace",
-        ],
+        sans: ["var(--font-sans-stack)"],
+        mono: ["var(--font-mono-stack)"],
       },
       colors: {
         background: "var(--background)",

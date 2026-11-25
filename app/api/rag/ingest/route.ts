@@ -13,7 +13,14 @@ import {
   SAMPLE_MANUAL_CONTENT,
   SAMPLE_MANUAL_FILENAME,
   SAMPLE_SUGGESTED_QUESTIONS,
+  SAMPLE_SUGGESTED_QUESTIONS_BY_LANG,
+  SuggestedQuestion,
+  SupportedUiLang,
 } from "@/lib/sample-manual";
+import {
+  detectPrimaryLanguage,
+  generateDocSuggestions,
+} from "@/lib/rag-suggestions";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -161,12 +168,46 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const embeddings = await embedDocumentChunks(
+    const docId = crypto.randomUUID();
+    const embeddingsPromise = embedDocumentChunks(
       rawChunks.map((c) => `[${c.section}]\n${c.content}`),
       apiKey
     );
 
-    const docId = crypto.randomUUID();
+    let docLang: SupportedUiLang = isSample
+      ? "ja"
+      : detectPrimaryLanguage(textContent);
+    let suggestedQuestions: SuggestedQuestion[] = [];
+    let embeddings: number[][];
+
+    if (isSample) {
+      embeddings = await embeddingsPromise;
+      suggestedQuestions = SAMPLE_SUGGESTED_QUESTIONS;
+    } else {
+      const suggestionsPromise = generateDocSuggestions({
+        docId,
+        docName: fileName,
+        chunks: rawChunks,
+        apiKey,
+      }).catch((err) => {
+        console.warn(
+          "[DocuFlow RAG] Non-fatal: failed to generate suggested questions:",
+          err instanceof Error ? err.message : err
+        );
+        return null;
+      });
+
+      const [resolvedEmbeddings, resolvedSuggestions] = await Promise.all([
+        embeddingsPromise,
+        suggestionsPromise,
+      ]);
+      embeddings = resolvedEmbeddings;
+      if (resolvedSuggestions) {
+        docLang = resolvedSuggestions.docLang;
+        suggestedQuestions = resolvedSuggestions.questions;
+      }
+    }
+
     const docChunks = rawChunks.map((chunk, idx) => ({
       id: `${docId}-chunk-${idx}`,
       docId,
@@ -194,7 +235,11 @@ export async function POST(request: NextRequest) {
       ok: true,
       sessionId,
       document: storedDoc,
-      suggestedQuestions: isSample ? SAMPLE_SUGGESTED_QUESTIONS : undefined,
+      docLang,
+      suggestedQuestions,
+      ...(isSample
+        ? { suggestedQuestionsByLang: SAMPLE_SUGGESTED_QUESTIONS_BY_LANG }
+        : {}),
       ...sessionState,
     });
   } catch (error) {

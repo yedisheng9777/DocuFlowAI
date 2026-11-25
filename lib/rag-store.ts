@@ -22,6 +22,7 @@ export interface StoredDocument {
   sections: string[];
   createdAt: string;
   isSample?: boolean;
+  lang?: "zh" | "ja" | "en";
 }
 
 export interface RetrievedChunk {
@@ -267,17 +268,17 @@ export async function embedDocumentChunks(
 
 export async function embedQueryText(
   query: string,
-  apiKey: string
+  apiKey: string,
+  signal?: AbortSignal
 ): Promise<number[]> {
   const genAI = new GoogleGenerativeAI(apiKey);
   const model = genAI.getGenerativeModel({ model: EMBEDDING_MODEL });
-  const { result: res } = await withGeminiRetry(
-    () =>
-      model.embedContent({
-        content: { role: "user", parts: [{ text: query }] },
-        taskType: TaskType.RETRIEVAL_QUERY,
-      }),
-    { label: `EmbedQuery(${EMBEDDING_MODEL})` }
+  const res = await model.embedContent(
+    {
+      content: { role: "user", parts: [{ text: query }] },
+      taskType: TaskType.RETRIEVAL_QUERY,
+    },
+    signal ? { signal } : undefined
   );
   return res.embedding.values;
 }

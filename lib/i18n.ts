@@ -45,6 +45,7 @@ export interface I18nDictionary {
     charUnit: string;
     removeDocTooltip: string;
     suggestedHeading: string;
+    generatingSuggestions: string;
     suggestedAction: string;
     suggestedLabels: Record<string, string>;
     emptyReadyTitle: string;
@@ -247,6 +248,7 @@ export const DICTIONARIES: Record<Locale, I18nDictionary> = {
       charUnit: "字",
       removeDocTooltip: "移除该文档",
       suggestedHeading: "推荐提问（点击立即向知识库发起检索问答）",
+      generatingSuggestions: "正在根据文档内容生成推荐提问...",
       suggestedAction: "点击提问 →",
       suggestedLabels: {
         "q-transport": "交通费报销上限与规则",
@@ -521,6 +523,7 @@ export const DICTIONARIES: Record<Locale, I18nDictionary> = {
       charUnit: "文字",
       removeDocTooltip: "この文書を削除",
       suggestedHeading: "質問サンプル（クリックで即座に RAG 検索を実行）",
+      generatingSuggestions: "ドキュメントの内容からおすすめ質問を生成しています...",
       suggestedAction: "質問する →",
       suggestedLabels: {
         "q-transport": "交通費の上限と精算ルール",
@@ -795,6 +798,7 @@ export const DICTIONARIES: Record<Locale, I18nDictionary> = {
       charUnit: "chars",
       removeDocTooltip: "Remove document",
       suggestedHeading: "Suggested Prompts (Click to run RAG retrieval)",
+      generatingSuggestions: "Generating suggested questions from your document...",
       suggestedAction: "Ask →",
       suggestedLabels: {
         "q-transport": "Commute & Travel Expense Cap",

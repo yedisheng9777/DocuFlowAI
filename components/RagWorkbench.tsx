@@ -17,9 +17,10 @@ import {
   UploadCloud,
   User,
 } from "lucide-react";
-import type {
-  SuggestedQuestion,
-  SupportedUiLang,
+import {
+  SAMPLE_SUGGESTED_QUESTIONS_BY_LANG,
+  type SuggestedQuestion,
+  type SupportedUiLang,
 } from "@/lib/sample-manual";
 import { useI18n } from "@/components/I18nProvider";
 
@@ -181,7 +182,7 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
     Object.values(suggestionsCache).find(
       (list) => Array.isArray(list) && list.length > 0
     ) ??
-    [];
+    SAMPLE_SUGGESTED_QUESTIONS_BY_LANG[locale];
 
   useEffect(() => {
     const newId =
@@ -305,20 +306,29 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
     }
   }
 
-  async function handleLoadSample() {
-    if (!sessionId || isIngesting) return;
+  async function loadSampleInternal(options?: {
+    silent?: boolean;
+    signal?: AbortSignal;
+  }): Promise<boolean> {
+    if (!sessionId) return false;
+    const silent = Boolean(options?.silent);
+    if (!silent && isIngesting) return false;
+
     preloadSeqRef.current += 1;
     setIsGeneratingSuggestions(false);
     setIngestError(null);
-    setIngestNotice(null);
-    setIsIngesting(true);
-    setIngestAction("sample");
+    if (!silent) {
+      setIngestNotice(null);
+      setIsIngesting(true);
+      setIngestAction("sample");
+    }
 
     try {
       const res = await fetch("/api/rag/ingest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode: "sample", sessionId }),
+        signal: options?.signal,
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
@@ -349,14 +359,25 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
         kind: "sample",
         chunks: data.document.chunkCount,
       });
+      return true;
     } catch (err) {
-      setIngestError(
-        err instanceof Error ? err.message : t.rag.ingestErrorFallback
-      );
+      const msg =
+        err instanceof Error ? err.message : t.rag.ingestErrorFallback;
+      setIngestError(msg);
+      if (silent) {
+        throw err;
+      }
+      return false;
     } finally {
-      setIsIngesting(false);
-      setIngestAction(null);
+      if (!silent) {
+        setIsIngesting(false);
+        setIngestAction(null);
+      }
     }
+  }
+
+  async function handleLoadSample() {
+    await loadSampleInternal({ silent: false });
   }
 
   async function handleRemoveDocument(docId: string, isSample?: boolean) {
@@ -411,14 +432,25 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
     }
   }
 
-  async function submitQuestion(rawQuestion: string) {
+  async function submitQuestion(
+    rawQuestion: string,
+    options?: { autoLoadSample?: boolean }
+  ) {
     const question = rawQuestion.trim();
-    if (!question || !sessionId || isAsking || totalChunks === 0) return;
+    const allowAutoSample = Boolean(options?.autoLoadSample);
+    if (
+      !question ||
+      !sessionId ||
+      isAsking ||
+      (totalChunks === 0 && !allowAutoSample)
+    ) {
+      return;
+    }
 
     const userMsgId = `u-${Date.now()}`;
     const assistantMsgId = `a-${Date.now() + 1}`;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 25000);
+    const timer = setTimeout(() => controller.abort(), 30000);
 
     setInputValue("");
     setIsAsking(true);
@@ -435,12 +467,37 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
     ]);
 
     try {
-      const res = await fetch("/api/rag/chat", {
+      if (allowAutoSample && (totalChunks === 0 || documents.length === 0)) {
+        await loadSampleInternal({ silent: true, signal: controller.signal });
+      }
+
+      let res = await fetch("/api/rag/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, question }),
         signal: controller.signal,
       });
+
+      // Handle cold-start / empty backend session seamlessly when clicking a suggested prompt
+      if (res.status === 400 && allowAutoSample) {
+        const errBody = (await res.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        if (
+          errBody.error &&
+          errBody.error.includes("知识库为空")
+        ) {
+          await loadSampleInternal({ silent: true, signal: controller.signal });
+          res = await fetch("/api/rag/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sessionId, question }),
+            signal: controller.signal,
+          });
+        } else {
+          throw new Error(errBody.error || `HTTP ${res.status}`);
+        }
+      }
 
       if (!res.ok) {
         const errBody = (await res.json().catch(() => ({}))) as {
@@ -786,8 +843,10 @@ export default function RagWorkbench({ onStatusChange }: RagWorkbenchProps) {
                 <button
                   key={sq.id}
                   type="button"
-                  disabled={isAsking}
-                  onClick={() => submitQuestion(sq.question)}
+                  disabled={isAsking || isIngesting}
+                  onClick={() =>
+                    submitQuestion(sq.question, { autoLoadSample: true })
+                  }
                   className="group flex flex-col items-start rounded-lg border border-slate-200 bg-slate-50/80 p-2.5 text-left transition hover:border-indigo-300 hover:bg-indigo-50/50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <div className="flex w-full items-start justify-between gap-2">
